@@ -45,14 +45,22 @@ const Skiper64 = () => {
 
   // Pointer lock state
   const [pointerLocked, setPointerLocked] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Theme state
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Prevent hydration mismatch
+  // Prevent hydration mismatch and detect mobile
   useEffect(() => {
     setMounted(true);
+    // Detect if device is mobile/touch device
+    const checkMobile = () => {
+      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+        ('ontouchstart' in window) ||
+        (navigator.maxTouchPoints > 0);
+    };
+    setIsMobile(checkMobile());
   }, []);
 
   // Initialize audio context
@@ -113,27 +121,48 @@ const Skiper64 = () => {
     oscillator.stop(audioContext.currentTime + 0.15);
   };
 
-  // Handle pointer lock change
+  // Handle pointer lock change (desktop only)
   useEffect(() => {
+    if (isMobile) return; // Skip pointer lock on mobile
+    
     const handlePointerLockChange = () => {
-      setPointerLocked(document.pointerLockElement === containerRef.current);
+      try {
+        setPointerLocked(document.pointerLockElement === containerRef.current);
+      } catch (error) {
+        // Silently fail on mobile or unsupported browsers
+        setPointerLocked(false);
+      }
     };
 
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     return () => document.removeEventListener('pointerlockchange', handlePointerLockChange);
-  }, []);
+  }, [isMobile]);
 
-  // Request/release pointer lock based on game state
+  // Request/release pointer lock based on game state (desktop only)
   useEffect(() => {
+    if (isMobile) return; // Skip pointer lock on mobile
+    
     if (gameStarted && !gameOver && !gamePaused && containerRef.current) {
-      containerRef.current.requestPointerLock();
+      try {
+        containerRef.current.requestPointerLock?.();
+      } catch (error) {
+        // Silently fail on mobile or unsupported browsers
+        console.debug('Pointer lock not supported');
+      }
     } else if (document.pointerLockElement === containerRef.current) {
-      document.exitPointerLock();
+      try {
+        document.exitPointerLock?.();
+      } catch (error) {
+        // Silently fail
+        console.debug('Pointer lock exit failed');
+      }
     }
-  }, [gameStarted, gameOver, gamePaused]);
+  }, [gameStarted, gameOver, gamePaused, isMobile]);
 
-  // Mouse tracking for paddle
+  // Mouse tracking for paddle (desktop)
   useEffect(() => {
+    if (isMobile) return; // Skip mouse events on mobile
+    
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return;
       
@@ -151,7 +180,7 @@ const Skiper64 = () => {
         // When pointer is locked, use movement deltas
         // Accumulate movement to track position relative to container center
         const currentPaddleX = paddleX.get();
-        const movementX = e.movementX;
+        const movementX = e.movementX || 0;
         mouseX = currentPaddleX + movementX;
       } else {
         // Fallback to client coordinates
@@ -167,7 +196,50 @@ const Skiper64 = () => {
 
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
-  }, [paddleX, paddleControls, pointerLocked, gamePaused, gameStarted]);
+  }, [paddleX, paddleControls, pointerLocked, gamePaused, gameStarted, isMobile]);
+
+  // Touch tracking for paddle (mobile)
+  useEffect(() => {
+    if (!isMobile) return; // Skip touch events on desktop
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!containerRef.current) return;
+      
+      // Don't move paddle when game hasn't started
+      if (!gameStarted) return;
+      
+      // Don't move paddle when game is paused
+      if (gamePaused) return;
+
+      e.preventDefault(); // Prevent scrolling
+      
+      const container = containerRef.current;
+      const containerRect = container.getBoundingClientRect();
+      
+      const touch = e.touches[0] || e.changedTouches[0];
+      if (!touch) return;
+
+      const touchX = touch.clientX - containerRect.left - containerRect.width / 2;
+      const maxX = containerRect.width / 2 - PADDLE_WIDTH / 2;
+      const constrainedX = Math.max(-maxX, Math.min(maxX, touchX));
+
+      paddleX.set(constrainedX);
+      paddleControls.set({ x: constrainedX });
+    };
+
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener("touchmove", handleTouchMove, { passive: false });
+      container.addEventListener("touchstart", handleTouchMove, { passive: false });
+    }
+    
+    return () => {
+      if (container) {
+        container.removeEventListener("touchmove", handleTouchMove);
+        container.removeEventListener("touchstart", handleTouchMove);
+      }
+    };
+  }, [paddleX, paddleControls, gamePaused, gameStarted, isMobile]);
 
   // Update ref when gameOver changes
   useEffect(() => {
@@ -199,16 +271,26 @@ const Skiper64 = () => {
         if (gamePaused) {
           // Unpause the game
           setGamePaused(false);
-          // Request pointer lock again to hide cursor
-          if (containerRef.current) {
-            containerRef.current.requestPointerLock();
+          // Request pointer lock again to hide cursor (desktop only)
+          if (!isMobile && containerRef.current) {
+            try {
+              containerRef.current.requestPointerLock?.();
+            } catch (error) {
+              // Silently fail on mobile or unsupported browsers
+              console.debug('Pointer lock not supported');
+            }
           }
         } else {
           // Pause the game
           setGamePaused(true);
-          // Exit pointer lock to show cursor
-          if (document.pointerLockElement === containerRef.current) {
-            document.exitPointerLock();
+          // Exit pointer lock to show cursor (desktop only)
+          if (!isMobile && document.pointerLockElement === containerRef.current) {
+            try {
+              document.exitPointerLock?.();
+            } catch (error) {
+              // Silently fail
+              console.debug('Pointer lock exit failed');
+            }
           }
         }
       }
@@ -503,7 +585,7 @@ const Skiper64 = () => {
             Click to start the game
           </span>
           <span className="text-xs opacity-40">
-            Move your mouse to control the paddle
+            {isMobile ? 'Touch and drag to control the paddle' : 'Move your mouse to control the paddle'}
           </span>
         </div>
       )}
