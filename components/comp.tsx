@@ -1,10 +1,10 @@
 "use client";
 
 import { motion, useMotionValue, useAnimationControls } from "framer-motion";
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useLayoutEffect } from "react";
 import NumberFlow, { continuous } from "@number-flow/react";
 import { useTheme } from "next-themes";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Sun, Pause, Play } from "lucide-react";
 
 const BALL_SIZE = 48; // size-12 = 48px
 const PADDLE_WIDTH = 180;
@@ -45,30 +45,43 @@ const Skiper64 = () => {
 
   // Pointer lock state
   const [pointerLocked, setPointerLocked] = useState(false);
+  const isMobileRef = useRef(false);
   const [isMobile, setIsMobile] = useState(false);
 
   // Theme state
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Prevent hydration mismatch and detect mobile
-  useEffect(() => {
-    setMounted(true);
+  // Detect mobile immediately on mount to prevent hydration issues
+  useLayoutEffect(() => {
     // Detect if device is mobile/touch device
     const checkMobile = () => {
+      if (typeof window === 'undefined') return false;
       return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
         ('ontouchstart' in window) ||
         (navigator.maxTouchPoints > 0);
     };
-    setIsMobile(checkMobile());
+    const mobile = checkMobile();
+    isMobileRef.current = mobile;
+    setIsMobile(mobile);
+    setMounted(true);
   }, []);
 
   // Initialize audio context
   useEffect(() => {
     // Create audio context on first user interaction
     const initAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      try {
+        if (!audioContextRef.current && typeof window !== 'undefined') {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioContextClass) {
+            audioContextRef.current = new AudioContextClass();
+          }
+        }
+      } catch (error) {
+        // AudioContext not supported or failed to initialize
+        console.debug('AudioContext initialization failed:', error);
+        audioContextRef.current = null;
       }
     };
     
@@ -77,53 +90,74 @@ const Skiper64 = () => {
       initAudio();
       document.removeEventListener('click', handleUserInteraction);
       document.removeEventListener('keydown', handleUserInteraction);
+      document.removeEventListener('touchstart', handleUserInteraction);
     };
     
     document.addEventListener('click', handleUserInteraction);
     document.addEventListener('keydown', handleUserInteraction);
+    document.addEventListener('touchstart', handleUserInteraction);
     
     return () => {
       document.removeEventListener('click', handleUserInteraction);
       document.removeEventListener('keydown', handleUserInteraction);
+      document.removeEventListener('touchstart', handleUserInteraction);
     };
   }, []);
 
   // Function to play sound when ball hits top paddle
   const playTopPaddleSound = () => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    try {
+      // Initialize AudioContext if not already created
+      if (!audioContextRef.current && typeof window !== 'undefined') {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          audioContextRef.current = new AudioContextClass();
+        } else {
+          return; // AudioContext not supported
+        }
+      }
+      
+      if (!audioContextRef.current) {
+        return; // AudioContext failed to initialize
+      }
+      
+      const audioContext = audioContextRef.current;
+      
+      // Resume audio context if suspended (required by some browsers, especially iOS)
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {
+          // Silently fail if resume fails
+          console.debug('AudioContext resume failed');
+        });
+      }
+      
+      // Create oscillator for a pleasant "ping" sound
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      // Set frequency for a pleasant tone (around 800Hz)
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.type = 'sine';
+      
+      // Create a quick attack and decay envelope
+      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.15);
+    } catch (error) {
+      // Silently fail if audio playback fails (common on mobile)
+      console.debug('Sound playback failed:', error);
     }
-    
-    const audioContext = audioContextRef.current;
-    
-    // Resume audio context if suspended (required by some browsers)
-    if (audioContext.state === 'suspended') {
-      audioContext.resume();
-    }
-    
-    // Create oscillator for a pleasant "ping" sound
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-    
-    // Set frequency for a pleasant tone (around 800Hz)
-    oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-    oscillator.type = 'sine';
-    
-    // Create a quick attack and decay envelope
-    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
-    
-    oscillator.start(audioContext.currentTime);
-    oscillator.stop(audioContext.currentTime + 0.15);
   };
 
   // Handle pointer lock change (desktop only)
   useEffect(() => {
-    if (isMobile) return; // Skip pointer lock on mobile
+    if (isMobileRef.current) return; // Skip pointer lock on mobile
     
     const handlePointerLockChange = () => {
       try {
@@ -136,11 +170,11 @@ const Skiper64 = () => {
 
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     return () => document.removeEventListener('pointerlockchange', handlePointerLockChange);
-  }, [isMobile]);
+  }, []);
 
   // Request/release pointer lock based on game state (desktop only)
   useEffect(() => {
-    if (isMobile) return; // Skip pointer lock on mobile
+    if (isMobileRef.current) return; // Skip pointer lock on mobile
     
     if (gameStarted && !gameOver && !gamePaused && containerRef.current) {
       try {
@@ -157,11 +191,11 @@ const Skiper64 = () => {
         console.debug('Pointer lock exit failed');
       }
     }
-  }, [gameStarted, gameOver, gamePaused, isMobile]);
+  }, [gameStarted, gameOver, gamePaused]);
 
   // Mouse tracking for paddle (desktop)
   useEffect(() => {
-    if (isMobile) return; // Skip mouse events on mobile
+    if (isMobileRef.current) return; // Skip mouse events on mobile
     
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return;
@@ -174,6 +208,11 @@ const Skiper64 = () => {
 
       const container = containerRef.current;
       const containerRect = container.getBoundingClientRect();
+      
+      // Validate rect
+      if (!containerRect || containerRect.width === 0 || containerRect.height === 0) {
+        return;
+      }
 
       let mouseX;
       if (pointerLocked) {
@@ -196,11 +235,21 @@ const Skiper64 = () => {
 
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
-  }, [paddleX, paddleControls, pointerLocked, gamePaused, gameStarted, isMobile]);
+  }, [paddleX, paddleControls, pointerLocked, gamePaused, gameStarted]);
 
-  // Touch tracking for paddle (mobile)
+  // Touch tracking for paddle (mobile) with throttling
   useEffect(() => {
-    if (!isMobile) return; // Skip touch events on desktop
+    if (!isMobileRef.current) return; // Skip touch events on desktop
+    
+    let rafId: number | null = null;
+    let lastTouchX = 0;
+    
+    const updatePaddlePosition = (touchX: number, containerRect: DOMRect) => {
+      const maxX = containerRect.width / 2 - PADDLE_WIDTH / 2;
+      const constrainedX = Math.max(-maxX, Math.min(maxX, touchX));
+      paddleX.set(constrainedX);
+      paddleControls.set({ x: constrainedX });
+    };
     
     const handleTouchMove = (e: TouchEvent) => {
       if (!containerRef.current) return;
@@ -216,30 +265,78 @@ const Skiper64 = () => {
       const container = containerRef.current;
       const containerRect = container.getBoundingClientRect();
       
+      // Validate rect
+      if (!containerRect || containerRect.width === 0 || containerRect.height === 0) {
+        return;
+      }
+      
       const touch = e.touches[0] || e.changedTouches[0];
       if (!touch) return;
 
       const touchX = touch.clientX - containerRect.left - containerRect.width / 2;
-      const maxX = containerRect.width / 2 - PADDLE_WIDTH / 2;
-      const constrainedX = Math.max(-maxX, Math.min(maxX, touchX));
+      lastTouchX = touchX;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(() => {
+          if (containerRef.current) {
+            const currentRect = containerRef.current.getBoundingClientRect();
+            if (currentRect && currentRect.width > 0 && currentRect.height > 0) {
+              updatePaddlePosition(lastTouchX, currentRect);
+            }
+          }
+          rafId = null;
+        });
+      }
+    };
+    
+    const handleTouchStart = (e: TouchEvent) => {
+      if (!containerRef.current) return;
+      
+      if (!gameStarted || gamePaused) return;
+      
+      e.preventDefault();
+      
+      const container = containerRef.current;
+      const containerRect = container.getBoundingClientRect();
+      
+      if (!containerRect || containerRect.width === 0 || containerRect.height === 0) {
+        return;
+      }
+      
+      const touch = e.touches[0];
+      if (!touch) return;
 
-      paddleX.set(constrainedX);
-      paddleControls.set({ x: constrainedX });
+      const touchX = touch.clientX - containerRect.left - containerRect.width / 2;
+      updatePaddlePosition(touchX, containerRect);
+    };
+    
+    const handleTouchCancel = () => {
+      // Cancel any pending animation frame
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
     };
 
     const container = containerRef.current;
     if (container) {
+      container.addEventListener("touchstart", handleTouchStart, { passive: false });
       container.addEventListener("touchmove", handleTouchMove, { passive: false });
-      container.addEventListener("touchstart", handleTouchMove, { passive: false });
+      container.addEventListener("touchcancel", handleTouchCancel, { passive: false });
     }
     
     return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
       if (container) {
+        container.removeEventListener("touchstart", handleTouchStart);
         container.removeEventListener("touchmove", handleTouchMove);
-        container.removeEventListener("touchstart", handleTouchMove);
+        container.removeEventListener("touchcancel", handleTouchCancel);
       }
     };
-  }, [paddleX, paddleControls, gamePaused, gameStarted, isMobile]);
+  }, [paddleX, paddleControls, gamePaused, gameStarted]);
 
   // Update ref when gameOver changes
   useEffect(() => {
@@ -263,28 +360,30 @@ const Skiper64 = () => {
     gamePausedRef.current = gamePaused;
   }, [gamePaused]);
 
-  // Keyboard event listener for pause/unpause
+  // Keyboard event listener for pause/unpause (desktop only)
   useEffect(() => {
+    if (isMobileRef.current) return; // Skip keyboard events on mobile
+    
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === ' ' && gameStarted && !gameOver) {
         e.preventDefault(); // Prevent page scroll
         if (gamePaused) {
           // Unpause the game
           setGamePaused(false);
-          // Request pointer lock again to hide cursor (desktop only)
-          if (!isMobile && containerRef.current) {
+          // Request pointer lock again to hide cursor
+          if (containerRef.current) {
             try {
               containerRef.current.requestPointerLock?.();
             } catch (error) {
-              // Silently fail on mobile or unsupported browsers
+              // Silently fail on unsupported browsers
               console.debug('Pointer lock not supported');
             }
           }
         } else {
           // Pause the game
           setGamePaused(true);
-          // Exit pointer lock to show cursor (desktop only)
-          if (!isMobile && document.pointerLockElement === containerRef.current) {
+          // Exit pointer lock to show cursor
+          if (document.pointerLockElement === containerRef.current) {
             try {
               document.exitPointerLock?.();
             } catch (error) {
@@ -320,6 +419,13 @@ const Skiper64 = () => {
 
       const container = containerRef.current;
       const containerRect = container.getBoundingClientRect();
+      
+      // Validate rect
+      if (!containerRect || containerRect.width === 0 || containerRect.height === 0) {
+        animationFrameRef.current = requestAnimationFrame(animate);
+        return;
+      }
+      
       const currentTime = performance.now();
 
       // Get current position relative to container center
@@ -452,11 +558,16 @@ const Skiper64 = () => {
       if (topPaddleRef.current) {
         const topPaddleY = -containerRect.height / 2 + 10 + PADDLE_HEIGHT / 2; // 10px from top
         const topPaddleRect = topPaddleRef.current.getBoundingClientRect();
-        const topPaddleWidth = topPaddleRect.width;
-        const topPaddleMinX = -topPaddleWidth / 2; // Top paddle is centered
-        const topPaddleMaxX = topPaddleWidth / 2;
-        const topPaddleMinY = topPaddleY - PADDLE_HEIGHT / 2;
-        const topPaddleMaxY = topPaddleY + PADDLE_HEIGHT / 2;
+        
+        // Validate top paddle rect
+        if (!topPaddleRect || topPaddleRect.width === 0 || topPaddleRect.height === 0) {
+          // Continue without top paddle collision if rect is invalid
+        } else {
+          const topPaddleWidth = topPaddleRect.width;
+          const topPaddleMinX = -topPaddleWidth / 2; // Top paddle is centered
+          const topPaddleMaxX = topPaddleWidth / 2;
+          const topPaddleMinY = topPaddleY - PADDLE_HEIGHT / 2;
+          const topPaddleMaxY = topPaddleY + PADDLE_HEIGHT / 2;
 
         // Collision detection with top paddle
         if (
@@ -491,6 +602,7 @@ const Skiper64 = () => {
             lastTopPaddleHit.current = false;
           }
         }
+        }
       }
 
       // Update values
@@ -513,8 +625,13 @@ const Skiper64 = () => {
     };
   }, [x, y, vx, vy, controls, paddleX, gameStarted, gameOver, gamePaused]);
 
-  // Start game on click
-  const handleStartGame = () => {
+  // Start game on click/touch
+  const handleStartGame = (e?: React.MouseEvent | React.TouchEvent) => {
+    // Don't start if clicking on interactive elements (buttons)
+    if (e && (e.target as HTMLElement).closest('button')) {
+      return;
+    }
+    
     if (!gameStarted) {
       setGameStarted(true);
       setPoints(0);
@@ -541,12 +658,26 @@ const Skiper64 = () => {
       controls.set({ x: 0, y: -100 });
     }
   };
+  
+  // Handle touch start for mobile
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // Only handle if game is over or not started
+    if (gameOver || !gameStarted) {
+      // Don't prevent default if it's on a button
+      if (!(e.target as HTMLElement).closest('button')) {
+        e.preventDefault();
+        handleStartGame(e);
+      }
+    }
+  };
 
   return (
     <div
       ref={containerRef}
       className={`flex h-full w-full flex-col items-center justify-center relative overflow-hidden ${pointerLocked ? 'cursor-none' : 'cursor-default'}`}
+      style={{ touchAction: 'none' }}
       onClick={handleStartGame}
+      onTouchStart={handleTouchStart}
     >
         <motion.div
           ref={topPaddleRef}
@@ -571,9 +702,27 @@ const Skiper64 = () => {
       )}
       {gameStarted && !gameOver && (
         <>
-          <div className="absolute top-4 left-4 text-xs opacity-60 z-50">
-            Click on <span className="italic">Space</span> to {gamePaused ? 'resume' : 'pause'}
-          </div>
+          {!isMobile && (
+            <div className="absolute top-4 left-4 text-xs opacity-60 z-50">
+              Click on <span className="italic">Space</span> to {gamePaused ? 'resume' : 'pause'}
+            </div>
+          )}
+          {isMobile && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setGamePaused(!gamePaused);
+              }}
+              className="absolute top-4 left-4 z-50 p-2 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:bg-background/90 transition-colors"
+              aria-label={gamePaused ? 'Resume game' : 'Pause game'}
+            >
+              {gamePaused ? (
+                <Play className="h-4 w-4 text-foreground" />
+              ) : (
+                <Pause className="h-4 w-4 text-foreground" />
+              )}
+            </button>
+          )}
           <div className="absolute top-4 right-16 text-xs opacity-60 z-50 flex items-center gap-1">
             Points: <span className="font-semibold"><NumberFlow value={points} /></span>
           </div>
@@ -582,7 +731,7 @@ const Skiper64 = () => {
       {!gameStarted && !gameOver && (
         <div className="absolute top-[20%] grid content-start justify-items-center gap-6 text-center z-20">
           <span className="relative max-w-[20ch] text-sm uppercase leading-tight opacity-60">
-            Click to start the game
+            {isMobile ? 'Tap to start the game' : 'Click to start the game'}
           </span>
           <span className="text-xs opacity-40">
             {isMobile ? 'Touch and drag to control the paddle' : 'Move your mouse to control the paddle'}
@@ -591,12 +740,20 @@ const Skiper64 = () => {
       )}
       {gameOver && (
         <>
-          {/* Blur background overlay */}
-          <div className="absolute inset-0 bg-background/50 backdrop-blur-md z-30" />
+          {/* Blur background overlay - clickable for restart */}
+          <div 
+            className="absolute inset-0 bg-background/50 backdrop-blur-md z-30"
+            onClick={handleStartGame}
+            onTouchStart={handleTouchStart}
+          />
           
-          {/* Game Over Popup */}
-          <div className="absolute inset-0 flex items-center justify-center z-40">
-            <div className="grid content-start justify-items-center gap-6 text-center">
+          {/* Game Over Popup - clickable for restart */}
+          <div 
+            className="absolute inset-0 flex items-center justify-center z-40"
+            onClick={handleStartGame}
+            onTouchStart={handleTouchStart}
+          >
+            <div className="grid content-start justify-items-center gap-6 text-center pointer-events-none">
               <span className="relative max-w-[20ch] text-sm uppercase leading-tight opacity-80">
                 Game Over
               </span>
@@ -614,7 +771,7 @@ const Skiper64 = () => {
                 </div>
               </div>
               <span className="text-xs opacity-60">
-                Click to restart
+                {isMobile ? 'Tap to restart' : 'Click to restart'}
               </span>
             </div>
           </div>
@@ -630,7 +787,7 @@ const Skiper64 = () => {
       <ul
         className="flex flex-col justify-end rounded-2xl"
         style={{
-          filter: "url(#SkiperGooeyFilter)",
+          filter: isMobile ? "none" : "url(#SkiperGooeyFilter)",
         }}
       >
         <motion.li
@@ -639,6 +796,7 @@ const Skiper64 = () => {
           style={{
             x,
             y,
+            willChange: "transform",
           }}
           className="bg-foreground size-12 rounded-full"
         ></motion.li>
@@ -647,8 +805,9 @@ const Skiper64 = () => {
         ref={paddleRef}
         animate={paddleControls}
         style={{
-          filter: "url(#SkiperGooeyFilter)",
+          filter: isMobile ? "none" : "url(#SkiperGooeyFilter)",
           x: paddleX,
+          willChange: "transform",
         }}
         className="absolute bottom-[80px] w-[180px] h-5 rounded-lg bg-foreground/80 backdrop-blur-sm"
       ></motion.div>

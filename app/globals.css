@@ -122,5 +122,14 @@
   }
   body {
     @apply bg-background text-foreground;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+  }
+  html {
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
   }
 }
